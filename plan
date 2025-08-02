@@ -1,0 +1,79 @@
+#!/bin/bash
+set -euo pipefail
+
+TEMPLATES_DIR="${HOME}/Templates"
+arg="${1:-}"  # filename, extension, or nothing
+
+command -v fzf >/dev/null || { echo "fzf not found. Install it."; exit 1; }
+
+# Get extension (if applicable)
+get_ext() {
+  [[ "$1" == .* ]] && echo "$1"
+  [[ "$1" == *.* ]] && echo ".${1##*.}" || echo ""
+}
+
+# Map extension to group
+find_group_by_ext() {
+  local ext="$1"
+  while IFS= read -r -d '' dir; do
+    directive="$dir/directive.tem"
+    [[ -f "$directive" ]] || continue
+    if grep -Fxq "$ext" "$directive"; then
+      echo "$(basename "$dir")"
+      return
+    fi
+  done < <(find "$TEMPLATES_DIR" -mindepth 1 -maxdepth 1 -type d -print0)
+}
+
+# List all templates in all groups
+all_templates() {
+  find "$TEMPLATES_DIR" -type f ! -name "directive.tem" | sed "s|$TEMPLATES_DIR/||"
+}
+
+# Pick one file via fzf and copy it
+pick_and_copy() {
+  local templates=("$@")
+  [[ ${#templates[@]} -eq 0 ]] && { echo "No templates found."; exit 1; }
+  choice=$(printf "%s\n" "${templates[@]}" | fzf --prompt="Choose template: ")
+  [[ -z "$choice" ]] && exit 1
+  cp "$TEMPLATES_DIR/$choice" "./$(basename "$choice")"
+  echo "Created $(basename "$choice") from template $choice"
+}
+
+# Handle logic
+if [[ -z "$arg" ]]; then
+  # No argument → show all templates, copy with default name
+  pick_and_copy $(all_templates)
+
+elif [[ "$arg" == .* && ${#arg} -gt 1 ]]; then
+  # Only an extension like ".cpp"
+  ext="$arg"
+  group=$(find_group_by_ext "$ext")
+  [[ -z "$group" ]] && { echo "No group found for extension $ext"; exit 1; }
+  files=( $(find "$TEMPLATES_DIR/$group" -type f ! -name "directive.tem" | sed "s|$TEMPLATES_DIR/$group/||") )
+  pick_and_copy "${files[@]/#/$group/}"
+
+else
+  # Argument is a full or partial filename (e.g., script.cpp)
+  basename="${arg##*/}"
+  ext="$(get_ext "$basename")"
+  name="${basename%.*}"
+
+  group=$(find_group_by_ext "$ext")
+
+  if [[ -n "$group" && -f "$TEMPLATES_DIR/$group/$basename" ]]; then
+    cp "$TEMPLATES_DIR/$group/$basename" "./$basename"
+    echo "Created $basename from template $group/$basename"
+  elif [[ -n "$group" ]]; then
+    echo "No exact match. Pick a template from group '$group':"
+    files=( $(find "$TEMPLATES_DIR/$group" -type f ! -name "directive.tem" | sed "s|$TEMPLATES_DIR/$group/||") )
+    [[ ${#files[@]} -eq 0 ]] && { echo "No templates found in $group."; exit 1; }
+    template=$(printf "%s\n" "${files[@]}" | fzf --prompt="Templates in $group: ")
+    [[ -z "$template" ]] && exit 1
+    cp "$TEMPLATES_DIR/$group/$template" "./$basename"
+    echo "Created $basename from template $group/$template"
+  else
+    echo "Extension '$ext' not recognized. Pick from all templates:"
+    pick_and_copy $(all_templates)
+  fi
+fi
